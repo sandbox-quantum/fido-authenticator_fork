@@ -7,8 +7,16 @@ use ctap_types::{
     sizes, Error,
 };
 
+use littlefs2::path::Path;
+
+use pqclean::{
+    sb_pqclean_dilithium3_clean_crypto_sign_keypair,
+    sb_pqclean_dilithium3_clean_crypto_sign_signature, sb_pqclean_kyber768_clean_crypto_kem_dec,
+    sb_pqclean_kyber768_clean_crypto_sign_keypair,
+};
+
 use trussed::{
-    syscall, try_syscall,
+    key, syscall, try_syscall,
     types::{
         KeyId, KeySerialization, Location, Mechanism, MediumData, Message, Path, PathBuf,
         SignatureSerialization,
@@ -18,7 +26,7 @@ use trussed::{
 use crate::{
     constants,
     credential::{self, Credential, FullCredential, Key, StrippedCredential},
-    format_hex,
+    format_hex, kyber768key, dil3key,
     state::{
         self,
         // // (2022-02-27): 9288 bytes
@@ -29,6 +37,11 @@ use crate::{
 
 #[allow(unused_imports)]
 use crate::msp;
+
+enum CosePublicKey {
+    Standard(Bytes<1024>),
+    Pqc(Bytes<1964>),
+}
 
 pub mod credential_management;
 // pub mod pin;
@@ -192,273 +205,55 @@ impl<UP: UserPresence, T: TrussedRequirements> Authenticator for crate::Authenti
         let mut algorithm: Option<SigningAlgorithm> = None;
         for param in parameters.pub_key_cred_params.0.iter() {
             match param.alg {
+                -20 => {
+                    algorithm = Some(SigningAlgorithm::Dil3);
+                    break;
+                }
                 -7 => {
                     if algorithm.is_none() {
                         algorithm = Some(SigningAlgorithm::P256);
+                        break;
                     }
                 }
                 -8 => {
                     algorithm = Some(SigningAlgorithm::Ed25519);
+                    break;
                 }
                 // -9 => { algorithm = Some(SigningAlgorithm::Totp); }
                 _ => {}
             }
         }
+
         let algorithm = algorithm.ok_or(Error::UnsupportedAlgorithm)?;
         info_now!("algo: {:?}", algorithm as i32);
 
-        // 8. process options; on known but unsupported error UnsupportedOption
-
         let mut rk_requested = false;
-        // TODO: why is this unused?
-        let mut _uv_requested = false;
-        let _up_requested = true; // can't be toggled
+        let mut private_key: KeyId = KeyId::from_special(0);
 
-        info_now!("MC options: {:?}", &parameters.options);
-        if let Some(ref options) = &parameters.options {
-            if Some(true) == options.rk {
-                rk_requested = true;
-            }
-            if Some(true) == options.uv {
-                _uv_requested = true;
-            }
-        }
+        let mut serialized_auth_data: Bytes<2392> = Bytes::default();
+        let mut dilithium3_private_key =
+            [0u8; pqclean::PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_SECRETKEYBYTES as usize];
+        let (mut attestation_maybe, mut aaguid): (Option<(KeyId, Bytes<1024>)>, [u8; 16]) =
+            (None, [0; 16]);
 
-        // 9. process extensions
-        let mut hmac_secret_requested = None;
-        // let mut cred_protect_requested = CredentialProtectionPolicy::Optional;
-        let mut cred_protect_requested = None;
-        if let Some(extensions) = &parameters.extensions {
-            hmac_secret_requested = extensions.hmac_secret;
-
-            if let Some(policy) = &extensions.cred_protect {
-                cred_protect_requested =
-                    Some(credential::CredentialProtectionPolicy::try_from(*policy)?);
-            }
-        }
-
-        // debug_now!("hmac-secret = {:?}, credProtect = {:?}", hmac_secret_requested, cred_protect_requested);
-
-        // 10. get UP, if denied error OperationDenied
-        self.up
-            .user_present(&mut self.trussed, constants::FIDO2_UP_TIMEOUT)?;
-
-        // 11. generate credential keypair
-        let location = match rk_requested {
-            true => Location::Internal,
-            false => Location::Volatile,
-        };
-
-        let private_key: KeyId;
-        let public_key: KeyId;
-        let cose_public_key;
-        match algorithm {
-            SigningAlgorithm::P256 => {
-                private_key = syscall!(self.trussed.generate_p256_private_key(location)).key;
-                public_key = syscall!(self
-                    .trussed
-                    .derive_p256_public_key(private_key, Location::Volatile))
-                .key;
-                cose_public_key = syscall!(self.trussed.serialize_key(
-                    Mechanism::P256,
-                    public_key,
-                    KeySerialization::Cose
-                ))
-                .serialized_key;
-                let _success = syscall!(self.trussed.delete(public_key)).success;
-                info_now!("deleted public P256 key: {}", _success);
-            }
-            SigningAlgorithm::Ed25519 => {
-                private_key = syscall!(self.trussed.generate_ed255_private_key(location)).key;
-                public_key = syscall!(self
-                    .trussed
-                    .derive_ed255_public_key(private_key, Location::Volatile))
-                .key;
-                cose_public_key = syscall!(self.trussed.serialize_key(
-                    Mechanism::Ed255,
-                    public_key,
-                    KeySerialization::Cose
-                ))
-                .serialized_key;
-                let _success = syscall!(self.trussed.delete(public_key)).success;
-                info_now!("deleted public Ed25519 key: {}", _success);
-            } // SigningAlgorithm::Totp => {
-              //     if parameters.client_data_hash.len() != 32 {
-              //         return Err(Error::InvalidParameter);
-              //     }
-              //     // b'TOTP---W\x0e\xf1\xe0\xd7\x83\xfe\t\xd1\xc1U\xbf\x08T_\x07v\xb2\xc6--TOTP'
-              //     let totp_secret: [u8; 20] = parameters.client_data_hash[6..26].try_into().unwrap();
-              //     private_key = syscall!(self.trussed.unsafe_inject_shared_key(
-              //         &totp_secret, Location::Internal)).key;
-              //     // info_now!("totes injected");
-              //     let fake_cose_pk = ctap_types::cose::TotpPublicKey {};
-              //     let fake_serialized_cose_pk = trussed::cbor_serialize_bytes(&fake_cose_pk)
-              //         .map_err(|_| Error::NotAllowed)?;
-              //     cose_public_key = fake_serialized_cose_pk; // Bytes::from_slice(&[0u8; 20]).unwrap();
-              // }
-        }
-
-        // 12. if `rk` is set, store or overwrite key pair, if full error KeyStoreFull
-
-        // 12.a generate credential
-        let key_parameter = match rk_requested {
-            true => Key::ResidentKey(private_key),
-            false => {
-                // WrappedKey version
-                let wrapping_key = self.state.persistent.key_wrapping_key(&mut self.trussed)?;
-                let wrapped_key =
-                    syscall!(self
-                        .trussed
-                        .wrap_key_chacha8poly1305(wrapping_key, private_key, &[]))
-                    .wrapped_key;
-
-                // 32B key, 12B nonce, 16B tag + some info on algorithm (P256/Ed25519)
-                // Turns out it's size 92 (enum serialization not optimized yet...)
-                // let mut wrapped_key = Bytes::<60>::new();
-                // wrapped_key.extend_from_slice(&wrapped_key_msg).unwrap();
-                Key::WrappedKey(wrapped_key.to_bytes().map_err(|_| Error::Other)?)
-            }
-        };
-
-        // injecting this is a bit mehhh..
-        let nonce = syscall!(self.trussed.random_bytes(12))
-            .bytes
-            .as_slice()
-            .try_into()
-            .unwrap();
-        info_now!("nonce = {:?}", &nonce);
-
-        // 12.b generate credential ID { = AEAD(Serialize(Credential)) }
-        let kek = self
-            .state
-            .persistent
-            .key_encryption_key(&mut self.trussed)?;
-
-        // store it.
-        // TODO: overwrite, error handling with KeyStoreFull
-
-        let credential = FullCredential::new(
-            credential::CtapVersion::Fido21Pre,
-            &parameters.rp,
-            &parameters.user,
-            algorithm as i32,
-            key_parameter,
-            self.state.persistent.timestamp(&mut self.trussed)?,
-            hmac_secret_requested,
-            cred_protect_requested,
-            nonce,
+        let _res = self.process_make_credential(
+            parameters,
+            rp_id_hash,
+            uv_performed,
+            algorithm,
+            &mut rk_requested,
+            &mut dilithium3_private_key,
+            &mut private_key,
+            &mut attestation_maybe,
+            &mut aaguid,
+            &mut serialized_auth_data,
         );
-
-        // note that this does the "stripping" of OptionalUI etc.
-        let credential_id =
-            StrippedCredential::from(&credential).id(&mut self.trussed, kek, &rp_id_hash)?;
-
-        if rk_requested {
-            // serialization with all metadata
-            let serialized_credential = credential.serialize()?;
-
-            // first delete any other RK cred with same RP + UserId if there is one.
-            self.delete_resident_key_by_user_id(&rp_id_hash, &credential.user.id)
-                .ok();
-
-            let mut key_store_full = false;
-
-            // then check the maximum number of RK credentials
-            if let Some(max_count) = self.config.max_resident_credential_count {
-                let mut cm = credential_management::CredentialManagement::new(self);
-                let metadata = cm.get_creds_metadata();
-                let count = metadata
-                    .existing_resident_credentials_count
-                    .unwrap_or(max_count);
-                debug!("resident cred count: {} (max: {})", count, max_count);
-                if count >= max_count {
-                    error!("maximum resident credential count reached");
-                    key_store_full = true;
-                }
-            }
-
-            if !key_store_full {
-                // then store key, making it resident
-                let credential_id_hash = self.hash(credential_id.0.as_ref());
-                let result = try_syscall!(self.trussed.write_file(
-                    Location::Internal,
-                    rk_path(&rp_id_hash, &credential_id_hash),
-                    serialized_credential,
-                    // user attribute for later easy lookup
-                    // Some(rp_id_hash.clone()),
-                    None,
-                ));
-                key_store_full = result.is_err();
-            }
-
-            if key_store_full {
-                // If we previously deleted an existing cred with the same RP + UserId but then
-                // failed to store the new cred, the RP directory could now be empty.  This is not
-                // a valid state so we have to delete it.
-                let rp_dir = rp_rk_dir(&rp_id_hash);
-                self.delete_rp_dir_if_empty(rp_dir);
-                return Err(Error::KeyStoreFull);
-            }
-        }
-
-        // 13. generate and return attestation statement using clientDataHash
-
-        // 13.a AuthenticatorData and its serialization
-        use ctap2::AuthenticatorDataFlags as Flags;
-        info_now!("MC created cred id");
-
-        let (attestation_maybe, aaguid) = self.state.identity.attestation(&mut self.trussed);
-
-        let authenticator_data = ctap2::make_credential::AuthenticatorData {
-            rp_id_hash: rp_id_hash.to_bytes().map_err(|_| Error::Other)?,
-
-            flags: {
-                let mut flags = Flags::USER_PRESENCE;
-                if uv_performed {
-                    flags |= Flags::USER_VERIFIED;
-                }
-                if true {
-                    flags |= Flags::ATTESTED_CREDENTIAL_DATA;
-                }
-                if hmac_secret_requested.is_some() || cred_protect_requested.is_some() {
-                    flags |= Flags::EXTENSION_DATA;
-                }
-                flags
-            },
-
-            sign_count: self.state.persistent.timestamp(&mut self.trussed)?,
-
-            attested_credential_data: {
-                // debug_now!("acd in, cid len {}, pk len {}", credential_id.0.len(), cose_public_key.len());
-                let attested_credential_data = ctap2::make_credential::AttestedCredentialData {
-                    aaguid: Bytes::from_slice(&aaguid).unwrap(),
-                    credential_id: credential_id.0.to_bytes().unwrap(),
-                    credential_public_key: cose_public_key.to_bytes().unwrap(),
-                };
-                // debug_now!("cose PK = {:?}", &attested_credential_data.credential_public_key);
-                Some(attested_credential_data)
-            },
-
-            extensions: {
-                if hmac_secret_requested.is_some() || cred_protect_requested.is_some() {
-                    Some(ctap2::make_credential::Extensions {
-                        cred_protect: parameters.extensions.as_ref().unwrap().cred_protect,
-                        hmac_secret: parameters.extensions.as_ref().unwrap().hmac_secret,
-                    })
-                } else {
-                    None
-                }
-            },
-        };
-        // debug_now!("authData = {:?}", &authenticator_data);
-
-        let serialized_auth_data = authenticator_data.serialize();
 
         // 13.b The Signature
 
         // can we write Sum<M, N> somehow?
         // debug_now!("seeking commitment, {} + {}", serialized_auth_data.len(), parameters.client_data_hash.len());
-        let mut commitment = Bytes::<1024>::new();
+        let mut commitment = Bytes::<2424>::new();
         commitment
             .extend_from_slice(&serialized_auth_data)
             .map_err(|_| Error::Other)?;
@@ -477,81 +272,102 @@ impl<UP: UserPresence, T: TrussedRequirements> Authenticator for crate::Authenti
         // we should also directly support "none" format, it's a bit weird
         // how browsers firefox this
 
-        let (signature, attestation_algorithm) = {
-            if attestation_maybe.is_none() {
-                match algorithm {
-                    SigningAlgorithm::Ed25519 => {
-                        let signature =
-                            syscall!(self.trussed.sign_ed255(private_key, &commitment)).signature;
-                        (signature.to_bytes().map_err(|_| Error::Other)?, -8)
+        let mut pqc_sig = [0; pqclean::PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_BYTES as usize];
+        let mut siglen = pqclean::PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_BYTES as usize;
+        sb_pqclean_dilithium3_clean_crypto_sign_signature(
+            &commitment,
+            &mut dilithium3_private_key,
+            &mut pqc_sig,
+            &mut siglen,
+        );
+
+        let att_stmt;
+        {
+            let (signature, attestation_algorithm) = {
+                if attestation_maybe.is_none() {
+                    match algorithm {
+                        SigningAlgorithm::Dil3 => {
+                            info_now!("Signing using Dilithium3");
+                            (Bytes::from_slice(&pqc_sig).unwrap(), -20)
+                        }
+                        SigningAlgorithm::Ed25519 => {
+                            let signature =
+                                syscall!(self.trussed.sign_ed255(private_key, &commitment))
+                                    .signature;
+                            (signature.to_bytes().map_err(|_| Error::Other)?, -8)
+                        }
+
+                        SigningAlgorithm::P256 => {
+                            // DO NOT prehash here, `trussed` does that
+                            let der_signature = syscall!(self.trussed.sign_p256(
+                                private_key,
+                                &commitment,
+                                SignatureSerialization::Asn1Der
+                            ))
+                            .signature;
+                            (der_signature.to_bytes().map_err(|_| Error::Other)?, -7)
+                        } // SigningAlgorithm::Totp => {
+                          //     // maybe we can fake it here too, but seems kinda weird
+                          //     // return Err(Error::UnsupportedAlgorithm);
+                          //     // micro-ecc is borked. let's self-sign anyway
+                          //     let hash = syscall!(self.trussed.hash_sha256(&commitment.as_ref())).hash;
+                          //     let tmp_key = syscall!(self.trussed
+                          //         .generate_p256_private_key(Location::Volatile))
+                          //         .key;
+
+                          //     let signature = syscall!(self.trussed.sign_p256(
+                          //         tmp_key,
+                          //         &hash,
+                          //         SignatureSerialization::Asn1Der,
+                          //     )).signature;
+                          //     (signature.to_bytes().map_err(|_| Error::Other)?, -7)
+                          // }
                     }
-
-                    SigningAlgorithm::P256 => {
-                        // DO NOT prehash here, `trussed` does that
-                        let der_signature = syscall!(self.trussed.sign_p256(
-                            private_key,
-                            &commitment,
-                            SignatureSerialization::Asn1Der
-                        ))
-                        .signature;
-                        (der_signature.to_bytes().map_err(|_| Error::Other)?, -7)
-                    } // SigningAlgorithm::Totp => {
-                      //     // maybe we can fake it here too, but seems kinda weird
-                      //     // return Err(Error::UnsupportedAlgorithm);
-                      //     // micro-ecc is borked. let's self-sign anyway
-                      //     let hash = syscall!(self.trussed.hash_sha256(&commitment.as_ref())).hash;
-                      //     let tmp_key = syscall!(self.trussed
-                      //         .generate_p256_private_key(Location::Volatile))
-                      //         .key;
-
-                      //     let signature = syscall!(self.trussed.sign_p256(
-                      //         tmp_key,
-                      //         &hash,
-                      //         SignatureSerialization::Asn1Der,
-                      //     )).signature;
-                      //     (signature.to_bytes().map_err(|_| Error::Other)?, -7)
-                      // }
+                } else {
+                    let signature = syscall!(self.trussed.sign_p256(
+                        attestation_maybe.as_ref().unwrap().0,
+                        &commitment,
+                        SignatureSerialization::Asn1Der,
+                    ))
+                    .signature;
+                    (signature.to_bytes().map_err(|_| Error::Other)?, -7)
                 }
-            } else {
-                let signature = syscall!(self.trussed.sign_p256(
-                    attestation_maybe.as_ref().unwrap().0,
-                    &commitment,
-                    SignatureSerialization::Asn1Der,
-                ))
-                .signature;
-                (signature.to_bytes().map_err(|_| Error::Other)?, -7)
-            }
-        };
-        // debug_now!("SIG = {:?}", &signature);
+            };
+            // debug_now!("SIG = {:?}", &signature);
 
-        if !rk_requested {
-            let _success = syscall!(self.trussed.delete(private_key)).success;
-            info_now!("deleted private credential key: {}", _success);
+            if !rk_requested {
+                let _success = syscall!(self.trussed.delete(private_key)).success;
+                info_now!("deleted private credential key: {}", _success);
+            }
+
+            att_stmt = ctap2::make_credential::AttestationStatement::Packed(
+                ctap2::make_credential::PackedAttestationStatement {
+                    alg: attestation_algorithm,
+                    sig: signature,
+                    x5c: match attestation_maybe.is_some() {
+                        false => None,
+                        true => {
+                            info_now!("in x5c true");
+                            // See: https://www.w3.org/TR/webauthn-2/#sctn-packed-attestation-cert-requirements
+                            let cert = attestation_maybe.as_ref().unwrap().1.clone();
+                            let mut x5c = Vec::new();
+                            x5c.push(cert).ok();
+                            Some(x5c)
+                        }
+                    },
+                },
+            );
         }
 
-        let packed_attn_stmt = ctap2::make_credential::PackedAttestationStatement {
-            alg: attestation_algorithm,
-            sig: signature,
-            x5c: match attestation_maybe.is_some() {
-                false => None,
-                true => {
-                    // See: https://www.w3.org/TR/webauthn-2/#sctn-packed-attestation-cert-requirements
-                    let cert = attestation_maybe.as_ref().unwrap().1.clone();
-                    let mut x5c = Vec::new();
-                    x5c.push(cert).ok();
-                    Some(x5c)
-                }
-            },
-        };
-
         let fmt = String::<32>::from("packed");
-        let att_stmt = ctap2::make_credential::AttestationStatement::Packed(packed_attn_stmt);
 
         let attestation_object = ctap2::make_credential::Response {
             fmt,
             auth_data: serialized_auth_data,
             att_stmt,
         };
+
+        debug_now!("Finished make_credential function");
 
         Ok(attestation_object)
     }
@@ -600,6 +416,8 @@ impl<UP: UserPresence, T: TrussedRequirements> Authenticator for crate::Authenti
         debug_now!("CTAP2.PIN...");
         // info_now!("{:?}", parameters);
 
+        // Enable Kyber768 for PQC KEM
+        let enable_kyber = true;
         // TODO: Handle pin protocol V2
         if parameters.pin_protocol != 1 {
             return Err(Error::InvalidParameter);
@@ -617,27 +435,58 @@ impl<UP: UserPresence, T: TrussedRequirements> Authenticator for crate::Authenti
             }
 
             Subcommand::GetKeyAgreement => {
-                debug_now!("CTAP2.Pin.GetKeyAgreement");
+                debug_now!(
+                    "CTAP2.Pin.GetKeyAgreement protocol {:?}",
+                    parameters.pin_protocol
+                );
 
-                let private_key = self.state.runtime.key_agreement_key(&mut self.trussed);
-                let public_key = syscall!(self
-                    .trussed
-                    .derive_p256_public_key(private_key, Location::Volatile))
-                .key;
-                let serialized_cose_key = syscall!(self.trussed.serialize_key(
-                    Mechanism::P256,
-                    public_key,
-                    KeySerialization::EcdhEsHkdf256
-                ))
-                .serialized_key;
-                let cose_key = trussed::cbor_deserialize(&serialized_cose_key).unwrap();
+                if !enable_kyber {
+                    let private_key = self.state.runtime.key_agreement_key(&mut self.trussed);
+                    let public_key = syscall!(self
+                        .trussed
+                        .derive_p256_public_key(private_key, Location::Volatile))
+                    .key;
+                    let serialized_cose_key = syscall!(self.trussed.serialize_key(
+                        Mechanism::P256,
+                        public_key,
+                        KeySerialization::EcdhEsHkdf256
+                    ))
+                    .serialized_key;
+                    let cose_key = trussed::cbor_deserialize(&serialized_cose_key).unwrap();
 
-                syscall!(self.trussed.delete(public_key));
+                    syscall!(self.trussed.delete(public_key));
 
-                ctap2::client_pin::Response {
-                    key_agreement: cose_key,
-                    pin_token: None,
-                    retries: None,
+                    ctap2::client_pin::Response {
+                        key_agreement: cose_key,
+                        pin_token: None,
+                        retries: None,
+                    }
+                } else {
+                    //generate kyber keypair
+                    let (kyberpk, kybersk) = sb_pqclean_kyber768_clean_crypto_sign_keypair();
+
+                    let kyber_cose_pk = cosey::Kyber768PublicKey {
+                        x: Bytes::from_slice(&kyberpk).unwrap(),
+                    };
+                    info_now!("got kyber cose_pk {:?}", kyber_cose_pk);
+                    let kyber_serialized_public_key: Bytes<1200> =
+                        crate::cbor_serialize_bytes(&kyber_cose_pk).unwrap();
+                    info_now!("Kyber cose key 2");
+                    let kyber_cose_public_key =
+                        trussed::cbor_deserialize(&kyber_serialized_public_key).unwrap();
+                    let key_id = self.store_key(
+                        Location::Internal,
+                        key::Secrecy::Secret,
+                        "kyber768",
+                        &kybersk,
+                    );
+                    self.state.runtime.key_agreement_pqc_key = Some(key_id);
+
+                    ctap2::client_pin::Response {
+                        key_agreement: kyber_cose_public_key,
+                        pin_token: None,
+                        retries: None,
+                    }
                 }
             }
 
@@ -772,46 +621,125 @@ impl<UP: UserPresence, T: TrussedRequirements> Authenticator for crate::Authenti
             Subcommand::GetPinToken => {
                 debug_now!("CTAP2.Pin.GetPinToken");
 
-                // 1. check mandatory parameters
-                let platform_kek = match parameters.key_agreement.as_ref() {
-                    Some(key) => key,
-                    None => {
-                        return Err(Error::MissingParameter);
-                    }
-                };
-                let pin_hash_enc = match parameters.pin_hash_enc.as_ref() {
-                    Some(hash) => hash,
-                    None => {
-                        return Err(Error::MissingParameter);
-                    }
-                };
+                let pin_token_enc;
+                if !enable_kyber {
+                    debug_now!(
+                        "CTAP2.Pin.GetPinToken 00 {:?}",
+                        parameters.key_agreement.as_ref()
+                    );
 
-                // 2. fail if no retries left
-                self.state.pin_blocked()?;
+                    // 1. check mandatory parameters
+                    let platform_kek = match parameters.key_agreement.as_ref() {
+                        Some(key) => key,
+                        None => {
+                            return Err(Error::MissingParameter);
+                        }
+                    };
 
-                // 3. generate shared secret
-                let shared_secret = self
-                    .state
-                    .runtime
-                    .generate_shared_secret(&mut self.trussed, platform_kek)?;
+                    let pin_hash_enc = match parameters.pin_hash_enc.as_ref() {
+                        Some(hash) => hash,
+                        None => {
+                            return Err(Error::MissingParameter);
+                        }
+                    };
 
-                // 4. decrement retires
-                self.state.decrement_retries(&mut self.trussed)?;
+                    // 2. fail if no retries left
+                    self.state.pin_blocked()?;
 
-                // 5. decrypt and verify pinHashEnc
-                self.decrypt_pin_hash_and_maybe_escalate(shared_secret, pin_hash_enc)?;
+                    // 3. generate shared secret
+                    let shared_secret = self
+                        .state
+                        .runtime
+                        .generate_shared_secret(&mut self.trussed, platform_kek)?;
 
-                // 6. reset retries
-                self.state.reset_retries(&mut self.trussed)?;
+                    // 4. decrement retires
+                    self.state.decrement_retries(&mut self.trussed)?;
 
-                // 7. return encrypted pinToken
-                let pin_token = self.state.runtime.pin_token(&mut self.trussed);
-                debug_now!("wrapping pin token");
-                // info_now!("exists? {}", syscall!(self.trussed.exists(shared_secret)).exists);
-                let pin_token_enc =
-                    syscall!(self.trussed.wrap_key_aes256cbc(shared_secret, pin_token)).wrapped_key;
+                    // 5. decrypt and verify pinHashEnc
+                    self.decrypt_pin_hash_and_maybe_escalate(shared_secret, pin_hash_enc)?;
 
-                syscall!(self.trussed.delete(shared_secret));
+                    // 6. reset retries
+                    self.state.reset_retries(&mut self.trussed)?;
+
+                    // 7. return encrypted pinToken
+                    let pin_token = self.state.runtime.pin_token(&mut self.trussed);
+                    pin_token_enc =
+                        syscall!(self.trussed.wrap_key_aes256cbc(shared_secret, pin_token))
+                            .wrapped_key;
+
+                    syscall!(self.trussed.delete(shared_secret));
+                } else {
+                    debug_now!(
+                        "CTAP2.Pin.GetPinToken key_agreement_pqc {:?}",
+                        parameters.key_agreement_pqc.as_ref()
+                    );
+
+                    let pqc_key_agreement = parameters.key_agreement_pqc.as_ref();
+
+                    let pin_hash_enc = match parameters.pin_hash_enc.as_ref() {
+                        Some(hash) => hash,
+                        None => {
+                            return Err(Error::MissingParameter);
+                        }
+                    };
+
+                    // 2. fail if no retries left
+                    self.state.pin_blocked()?;
+
+                    // 3. generate shared secret
+                    let mut path = PathBuf::from("pqc_key/");
+                    path.push(&PathBuf::from(
+                        self.state
+                            .runtime
+                            .key_agreement_pqc_key
+                            .as_mut()
+                            .unwrap()
+                            .as_slice(),
+                    ));
+                    let kyber_key = syscall!(self
+                        .trussed
+                        .read_file_pqc(Location::Internal, path.clone(),))
+                    .data;
+                    let deserialized_key: Result<kyber768key::Key> =
+                        kyber768key::Key::deserialize(kyber_key);
+
+                    let kyber768_private_key: [u8; 2400] = deserialized_key
+                        .unwrap()
+                        .get_material()
+                        .as_slice()
+                        .try_into()
+                        .unwrap();
+                    let mut pqc_key_agreement_array = [0; 1088];
+                    pqc_key_agreement_array.copy_from_slice(&pqc_key_agreement.unwrap());
+                    let mut shared_secret_pqc = [0; 32];
+                    sb_pqclean_kyber768_clean_crypto_kem_dec(
+                        &mut shared_secret_pqc,
+                        &pqc_key_agreement_array,
+                        &kyber768_private_key,
+                    );
+                    let cloned_shared_secret_pqc: [u8; 32] = shared_secret_pqc.clone();
+
+                    // 4. decrement retires
+                    self.state.decrement_retries(&mut self.trussed)?;
+
+                    // 5. decrypt and verify pinHashEnc
+                    self.decrypt_pin_hash_and_maybe_escalate_pqc(
+                        &cloned_shared_secret_pqc,
+                        pin_hash_enc,
+                    )?;
+
+                    // 6. reset retries
+                    self.state.reset_retries(&mut self.trussed)?;
+
+                    // 7. return encrypted pinToken
+                    let pin_token = self.state.runtime.pin_token(&mut self.trussed);
+
+                    // info_now!("exists? {}", syscall!(self.trussed.exists(shared_secret)).exists);
+                    pin_token_enc = syscall!(self
+                        .trussed
+                        .wrap_key_aes256cbc_pqc(&cloned_shared_secret_pqc, pin_token))
+                    .wrapped_key;
+                }
 
                 // ble...
                 if pin_token_enc.len() != 16 {
@@ -1081,13 +1009,17 @@ impl<UP: UserPresence, T: TrussedRequirements> crate::Authenticator<UP, T> {
         use crate::state::CachedCredential;
         use core::str::FromStr;
 
+        debug_now!("Cred Paths");
         while let Some(path) = maybe_path {
+            debug_now!("assert cred path {:?}", path.as_str_ref_with_trailing_nul());
             let credential_data =
                 syscall!(self.trussed.read_file(Location::Internal, path.clone(),)).data;
 
+            debug_now!("cred search 2");
             let credential = FullCredential::deserialize(&credential_data).ok()?;
             let timestamp = credential.creation_time;
             let credential = Credential::Full(credential);
+            debug_now!("cred search 3");
 
             if self.check_credential_applicable(&credential, false, uv_performed) {
                 self.state.runtime.push_credential(CachedCredential {
@@ -1095,6 +1027,7 @@ impl<UP: UserPresence, T: TrussedRequirements> crate::Authenticator<UP, T> {
                     path: String::from_str(path.as_str_ref_with_trailing_nul()).ok()?,
                 });
             }
+            debug_now!("cred search 4");
 
             maybe_path = syscall!(self.trussed.read_dir_next())
                 .entry
@@ -1114,6 +1047,41 @@ impl<UP: UserPresence, T: TrussedRequirements> crate::Authenticator<UP, T> {
         let pin_hash = syscall!(self.trussed.decrypt_aes256cbc(shared_secret, pin_hash_enc))
             .plaintext
             .ok_or(Error::Other)?;
+
+        let stored_pin_hash = match self.state.persistent.pin_hash() {
+            Some(hash) => hash,
+            None => {
+                return Err(Error::PinNotSet);
+            }
+        };
+
+        if pin_hash != stored_pin_hash {
+            // I) generate new KEK
+            self.state
+                .runtime
+                .rotate_key_agreement_key(&mut self.trussed);
+            if self.state.persistent.retries() == 0 {
+                return Err(Error::PinBlocked);
+            }
+            if self.state.persistent.pin_blocked() {
+                return Err(Error::PinAuthBlocked);
+            }
+            return Err(Error::PinInvalid);
+        }
+
+        Ok(())
+    }
+
+    fn decrypt_pin_hash_and_maybe_escalate_pqc(
+        &mut self,
+        shared_secret: &[u8],
+        pin_hash_enc: &Bytes<64>,
+    ) -> Result<()> {
+        let pin_hash = syscall!(self
+            .trussed
+            .decrypt_aes256cbc_pqc(shared_secret, pin_hash_enc))
+        .plaintext
+        .ok_or(Error::Other)?;
 
         let stored_pin_hash = match self.state.persistent.pin_hash() {
             Some(hash) => hash,
@@ -1383,6 +1351,30 @@ impl<UP: UserPresence, T: TrussedRequirements> crate::Authenticator<UP, T> {
                     _ => false,
                 }
             }
+            Key::PQCKey(key) => {
+                debug_now!("checking if PQCResidentKey {:?} exists", key);
+                match alg {
+                    -20 => {
+                        let mut path = PathBuf::from("pqc_key/");
+                        path.push(&PathBuf::from(key.as_slice()));
+                        let result =
+                            try_syscall!(self.trussed.read_file(Location::Internal, path.clone(),))
+                                .map_err(|_| Error::Other);
+                        let mut res = true;
+                        if result.is_err() {
+                            info_now!("err loading: {:?}", result.err().unwrap());
+                            res = false;
+                        }
+                        res
+                    }
+                    // -9 => {
+                    //     let exists = syscall!(self.trussed.exists(Mechanism::Totp, key)).exists;
+                    //     info_now!("found it");
+                    //     exists
+                    // }
+                    _ => false,
+                }
+            }
         }
     }
 
@@ -1500,6 +1492,10 @@ impl<UP: UserPresence, T: TrussedRequirements> crate::Authenticator<UP, T> {
                     }
                 }
             }
+            Key::PQCKey(_key) => {
+                // TODO : Update
+                (KeyId::from_special(0), true)
+            }
         };
 
         // 8. process any extensions present
@@ -1510,8 +1506,6 @@ impl<UP: UserPresence, T: TrussedRequirements> crate::Authenticator<UP, T> {
         };
 
         // 9./10. sign clientDataHash || authData with "first" credential
-
-        // info_now!("signing with credential {:?}", &credential);
         let kek = self
             .state
             .persistent
@@ -1554,22 +1548,60 @@ impl<UP: UserPresence, T: TrussedRequirements> crate::Authenticator<UP, T> {
             .extend_from_slice(&data.client_data_hash)
             .map_err(|_| Error::Other)?;
 
-        let (mechanism, serialization) = match credential.algorithm() {
-            -7 => (Mechanism::P256, SignatureSerialization::Asn1Der),
-            -8 => (Mechanism::Ed255, SignatureSerialization::Raw),
-            // -9 => (Mechanism::Totp, SignatureSerialization::Raw),
-            _ => {
-                return Err(Error::Other);
-            }
-        };
+        let signature = if credential.algorithm == -20 {
+            let mut pqc_sig = [0; pqclean::PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_BYTES as usize];
+            let mut siglen = pqclean::PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_BYTES as usize;
+            let mut path = PathBuf::from("pqc_key/");
 
-        debug_now!("signing with {:?}, {:?}", &mechanism, &serialization);
-        let signature = syscall!(self
-            .trussed
-            .sign(mechanism, key, &commitment, serialization))
-        .signature
-        .to_bytes()
-        .unwrap();
+            match credential.key.clone() {
+                Key::PQCKey(key) => {
+                    path.push(&PathBuf::from(key.as_slice()));
+                }
+                _ => {}
+            }
+            let deserialized_key: Result<dil3key::Key> = dil3key::Key::deserialize(
+                syscall!(self
+                    .trussed
+                    .read_file_pqc(Location::Internal, path.clone(),))
+                .data,
+            );
+            let mut dilithium3_private_key: [u8; 4000] = deserialized_key
+                .unwrap()
+                .get_material()
+                .as_slice()
+                .try_into()
+                .unwrap();
+
+            info_now!(
+                "starting Dilithium3 signing {:?}",
+                dilithium3_private_key.len()
+            );
+            sb_pqclean_dilithium3_clean_crypto_sign_signature(
+                &commitment,
+                &mut dilithium3_private_key,
+                &mut pqc_sig,
+                &mut siglen,
+            );
+            info_now!("Finished Dilithium3 signing");
+            Bytes::from_slice(&pqc_sig).unwrap()
+        } else {
+            let (mechanism, serialization) = match credential.algorithm {
+                -7 => (Mechanism::P256, SignatureSerialization::Asn1Der),
+                -8 => (Mechanism::Ed255, SignatureSerialization::Raw),
+                // -9 => (Mechanism::Totp, SignatureSerialization::Raw),
+                _ => {
+                    return Err(Error::Other);
+                }
+            };
+
+            debug_now!("signing with {:?}, {:?}", &mechanism, &serialization);
+            syscall!(self
+                .trussed
+                .sign(mechanism, key, &commitment, serialization))
+            .signature
+            .to_bytes()
+            .unwrap()
+        };
 
         if !is_rk {
             syscall!(self.trussed.delete(key));
@@ -1658,6 +1690,379 @@ impl<UP: UserPresence, T: TrussedRequirements> crate::Authenticator<UP, T> {
         Ok(())
     }
 
+    fn store_key(
+        &mut self,
+        location: Location,
+        _secrecy: key::Secrecy,
+        info: &str,
+        material: &[u8],
+    ) -> Bytes<16> {
+        use rand::rngs::SmallRng;
+        use rand::{Rng, SeedableRng};
+
+        let mut private_key_pqc_id: Bytes<16> = Bytes::new();
+        // TODO: Update random number generate to recieve different seed every time it generates a number. Current timestamp can be used here.
+        let mut rng = SmallRng::seed_from_u64(12345);
+        for _ in 0..16 {
+            private_key_pqc_id.push(rng.gen_range(97..=122)).unwrap();
+        }
+
+        info_now!("random generated {:?}", private_key_pqc_id);
+        let key = dil3key::Key {
+            kind: Bytes::from_slice(info.as_bytes()).unwrap(),
+            material: Bytes::from_slice(material).unwrap(),
+        };
+
+        let mut path = PathBuf::from("pqc_key/");
+        path.push(&PathBuf::from(private_key_pqc_id.as_slice()));
+        let res = try_syscall!(self.trussed.write_file_pqc(
+            location,
+            path,
+            key.serialize().unwrap(),
+            None,
+        ))
+        .map_err(|_| Error::KeyStoreFull);
+        if let Err(_err) = res {
+            debug_now!("Error occured while writing PQC key in file {:?}", _err);
+        }
+        private_key_pqc_id
+    }
+
+    #[inline(never)]
+    pub fn process_make_credential(
+        self: &mut Self,
+        parameters: &ctap2::make_credential::Request,
+        rp_id_hash: Bytes<32>,
+        uv_performed: bool,
+        algorithm: SigningAlgorithm,
+        rk_requested: &mut bool,
+        dilithium3_private_key: &mut [u8; 4000],
+        private_key: &mut KeyId,
+        attestation_maybe: &mut Option<(KeyId, Bytes<1024>)>,
+        aaguid: &mut [u8; 16],
+        serialized_auth_data: &mut Bytes<2392>,
+    ) -> Result<()> {
+        // 8. process options; on known but unsupported error UnsupportedOption
+
+        // TODO: why is this unused?
+        let mut _uv_requested = false;
+        let _up_requested = true; // can't be toggled
+
+        info_now!("MC options: {:?}", &parameters.options);
+        if let Some(ref options) = &parameters.options {
+            if Some(true) == options.rk {
+                *rk_requested = true;
+            }
+            if Some(true) == options.uv {
+                _uv_requested = true;
+            }
+        }
+
+        // 9. process extensions
+        let mut hmac_secret_requested = None;
+        // let mut cred_protect_requested = CredentialProtectionPolicy::Optional;
+        let mut cred_protect_requested = None;
+        if let Some(extensions) = &parameters.extensions {
+            hmac_secret_requested = extensions.hmac_secret;
+
+            if let Some(policy) = &extensions.cred_protect {
+                cred_protect_requested =
+                    Some(credential::CredentialProtectionPolicy::try_from(*policy)?);
+            }
+        }
+
+        debug_now!(
+            "hmac-secret = {:?}, credProtect = {:?}",
+            hmac_secret_requested,
+            cred_protect_requested
+        );
+
+        // 10. get UP, if denied error OperationDenied
+        self.up
+            .user_present(&mut self.trussed, constants::FIDO2_UP_TIMEOUT)?;
+
+        // 11. generate credential keypair
+        let location = match rk_requested {
+            true => Location::Internal,
+            false => Location::Volatile,
+        };
+
+        let public_key: KeyId;
+
+        let cose_public_key: CosePublicKey;
+        // let cose_public_key: Bytes<1024>;
+
+        // generate pqc - dilithium3 keys
+
+        // let keystore: &mut store::Keystore;
+
+        // let priv_key = keystore.store_key(
+        //     location,
+        //     key::Secrecy::Secret,
+        //     key::Info::from(key::Kind::Dil3).with_local_flag(),
+        //     &dilithium3_private_key,
+        // )?;
+        // debug_now!("stored priv key");
+
+        // let pub_key = keystore.store_key(
+        //     location,
+        //     key::Secrecy::Public,
+        //     key::Kind::Dil3,
+        //     &dilithium3_public_key,
+        // )?;
+        // let k_id = syscall!(self.trussed.random_bytes(128))
+        // .bytes
+        // .as_slice()
+        // .try_into()
+        // .unwrap();
+
+        let mut private_key_pqc_id: Bytes<16> = Bytes::default();
+        match algorithm {
+            SigningAlgorithm::Dil3 => {
+                let mut dilithium3_public_key =
+                    [0u8; pqclean::PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_PUBLICKEYBYTES as usize];
+                sb_pqclean_dilithium3_clean_crypto_sign_keypair(
+                    &mut dilithium3_public_key,
+                    dilithium3_private_key,
+                );
+
+                private_key_pqc_id = self.store_key(
+                    location,
+                    key::Secrecy::Secret,
+                    "dil3",
+                    dilithium3_private_key,
+                );
+                *private_key = KeyId::from_special(0);
+                let cose_pk = cosey::Dil3PublicKey {
+                    x: Bytes::from_slice(&dilithium3_public_key).unwrap(),
+                };
+
+                cose_public_key =
+                    CosePublicKey::Pqc(crate::cbor_serialize_bytes(&cose_pk).unwrap().into());
+            }
+            SigningAlgorithm::P256 => {
+                *private_key = syscall!(self.trussed.generate_p256_private_key(location)).key;
+                info_now!("generated p256 priv key");
+                public_key = syscall!(self
+                    .trussed
+                    .derive_p256_public_key(*private_key, Location::Volatile))
+                .key;
+                cose_public_key = CosePublicKey::Standard(
+                    syscall!(self.trussed.serialize_key(
+                        Mechanism::P256,
+                        public_key,
+                        KeySerialization::Cose
+                    ))
+                    .serialized_key
+                    .into(),
+                );
+                let _success = syscall!(self.trussed.delete(public_key)).success;
+            }
+            SigningAlgorithm::Ed25519 => {
+                *private_key = syscall!(self.trussed.generate_ed255_private_key(location)).key;
+                public_key = syscall!(self
+                    .trussed
+                    .derive_ed255_public_key(*private_key, Location::Volatile))
+                .key;
+                cose_public_key = CosePublicKey::Standard(
+                    syscall!(self.trussed.serialize_key(
+                        Mechanism::Ed255,
+                        public_key,
+                        KeySerialization::Cose
+                    ))
+                    .serialized_key
+                    .into(),
+                );
+                let _success = syscall!(self.trussed.delete(public_key)).success;
+                info_now!("deleted public Ed25519 key: {}", _success);
+            } // SigningAlgorithm::Totp => {
+              //     if parameters.client_data_hash.len() != 32 {
+              //         return Err(Error::InvalidParameter);
+              //     }
+              //     // b'TOTP---W\x0e\xf1\xe0\xd7\x83\xfe\t\xd1\xc1U\xbf\x08T_\x07v\xb2\xc6--TOTP'
+              //     let totp_secret: [u8; 20] = parameters.client_data_hash[6..26].try_into().unwrap();
+              //     private_key = syscall!(self.trussed.unsafe_inject_shared_key(
+              //         &totp_secret, Location::Internal)).key;
+              //     // info_now!("totes injected");
+              //     let fake_cose_pk = ctap_types::cose::TotpPublicKey {};
+              //     let fake_serialized_cose_pk = trussed::cbor_serialize_bytes(&fake_cose_pk)
+              //         .map_err(|_| Error::NotAllowed)?;
+              //     cose_public_key = fake_serialized_cose_pk; // Bytes::from_slice(&[0u8; 20]).unwrap();
+              // }
+        }
+
+        // 12. if `rk` is set, store or overwrite key pair, if full error KeyStoreFull
+
+        // 12.a generate credential
+        // let key_parameter = match rk_requested {
+        //     true => Key::ResidentKey(private_key),
+        //     false => {
+        //         // WrappedKey version
+        //         let wrapping_key = self.state.persistent.key_wrapping_key(&mut self.trussed)?;
+        //         let wrapped_key = syscall!(self.trussed.wrap_key_chacha8poly1305(
+        //             wrapping_key,
+        //             private_key,
+        //             &rp_id_hash,
+        //         ))
+        //         .wrapped_key;
+
+        //         // 32B key, 12B nonce, 16B tag + some info on algorithm (P256/Ed25519)
+        //         // Turns out it's size 92 (enum serialization not optimized yet...)
+        //         // let mut wrapped_key = Bytes::<60>::new();
+        //         // wrapped_key.extend_from_slice(&wrapped_key_msg).unwrap();
+        //         Key::WrappedKey(wrapped_key.to_bytes().map_err(|_| Error::Other)?)
+        //     }
+        // };
+
+        let key_parameter = match algorithm {
+            SigningAlgorithm::Dil3 => Key::PQCKey(private_key_pqc_id),
+            _ => {
+                match rk_requested {
+                    true => Key::ResidentKey(*private_key),
+                    false => {
+                        // WrappedKey version
+                        let wrapping_key =
+                            self.state.persistent.key_wrapping_key(&mut self.trussed)?;
+                        let wrapped_key = syscall!(self.trussed.wrap_key_chacha8poly1305(
+                            wrapping_key,
+                            *private_key,
+                            &rp_id_hash,
+                        ))
+                        .wrapped_key;
+
+                        // 32B key, 12B nonce, 16B tag + some info on algorithm (P256/Ed25519)
+                        // Turns out it's size 92 (enum serialization not optimized yet...)
+                        // let mut wrapped_key = Bytes::<60>::new();
+                        // wrapped_key.extend_from_slice(&wrapped_key_msg).unwrap();
+                        Key::WrappedKey(wrapped_key.to_bytes().map_err(|_| Error::Other)?)
+                    }
+                }
+            }
+        };
+
+        // injecting this is a bit mehhh..
+        let nonce = syscall!(self.trussed.random_bytes(12))
+            .bytes
+            .as_slice()
+            .try_into()
+            .unwrap();
+        info_now!("nonce = {:?}", &nonce);
+
+        // 12.b generate credential ID { = AEAD(Serialize(Credential)) }
+        let kek = self
+            .state
+            .persistent
+            .key_encryption_key(&mut self.trussed)?;
+
+        // store it.
+        // TODO: overwrite, error handling with KeyStoreFull
+
+        let credential = Credential::new(
+            credential::CtapVersion::Fido21Pre,
+            &parameters.rp,
+            &parameters.user,
+            algorithm as i32,
+            key_parameter,
+            self.state.persistent.timestamp(&mut self.trussed)?,
+            hmac_secret_requested,
+            cred_protect_requested,
+            nonce,
+        );
+
+        // note that this does the "stripping" of OptionalUI etc.
+        let credential_id = credential.id(&mut self.trussed, kek, Some(&rp_id_hash))?;
+
+        if *rk_requested {
+            // serialization with all metadata
+            let serialized_credential = credential.serialize()?;
+
+            // first delete any other RK cred with same RP + UserId if there is one.
+            self.delete_resident_key_by_user_id(&rp_id_hash, &credential.user.id)
+                .ok();
+
+            // then store key, making it resident
+            let credential_id_hash = self.hash(credential_id.0.as_ref());
+            try_syscall!(self.trussed.write_file(
+                Location::Internal,
+                rk_path(&rp_id_hash, &credential_id_hash),
+                serialized_credential,
+                // user attribute for later easy lookup
+                // Some(rp_id_hash.clone()),
+                None,
+            ))
+            .map_err(|_| Error::KeyStoreFull)?;
+        }
+
+        // 13. generate and return attestation statement using clientDataHash
+
+        // 13.a AuthenticatorData and its serialization
+        use ctap2::AuthenticatorDataFlags as Flags;
+
+        (*attestation_maybe, *aaguid) = self.state.identity.attestation(&mut self.trussed);
+
+        // let cose_public_key_bytes = match cose_public_key {
+        //     CosePublicKey::Standard(bytes1024) => bytes1024.to_bytes().unwrap(),
+        //     CosePublicKey::Pqc(bytes1964) => bytes1964.to_bytes().unwrap(),
+        // };
+
+        *serialized_auth_data = ctap2::make_credential::AuthenticatorData {
+            rp_id_hash: rp_id_hash.to_bytes().map_err(|_| Error::Other)?,
+
+            flags: {
+                let mut flags = Flags::USER_PRESENCE;
+                if uv_performed {
+                    flags |= Flags::USER_VERIFIED;
+                }
+                if true {
+                    flags |= Flags::ATTESTED_CREDENTIAL_DATA;
+                }
+                if hmac_secret_requested.is_some() || cred_protect_requested.is_some() {
+                    flags |= Flags::EXTENSION_DATA;
+                }
+                flags
+            },
+
+            sign_count: self.state.persistent.timestamp(&mut self.trussed)?,
+            attested_credential_data: {
+                debug_now!("acd in, cid len {}", credential_id.0.len());
+                let attested_credential_data = ctap2::make_credential::AttestedCredentialData {
+                    aaguid: Bytes::from_slice(aaguid).unwrap(),
+                    credential_id: credential_id.0.to_bytes().unwrap(),
+                    credential_public_key: match cose_public_key {
+                        CosePublicKey::Standard(bytes1024) => bytes1024.to_bytes().unwrap(),
+                        CosePublicKey::Pqc(bytes1964) => bytes1964.to_bytes().unwrap(),
+                    },
+                };
+                // debug_now!("cose PK = {:?}", &attested_credential_data.credential_public_key);
+                Some(attested_credential_data)
+            },
+
+            extensions: {
+                debug_now!("in extension");
+                if hmac_secret_requested.is_some() || cred_protect_requested.is_some() {
+                    Some(ctap2::make_credential::Extensions {
+                        cred_protect: parameters.extensions.as_ref().unwrap().cred_protect,
+                        hmac_secret: parameters.extensions.as_ref().unwrap().hmac_secret,
+                    })
+                } else {
+                    None
+                }
+            },
+        }
+        .serialize();
+        // debug_now!("authData = {:?}", &authenticator_data);
+
+        Ok(())
+        // Move the code block from the original function here, replacing the corresponding variables with the function arguments.
+        // You can also modify the arguments and return type as needed.
+
+        // The code block should start from the line "if let Some(options) = parameters.options.as_ref() {" and end before the line "let mut rk_requested = false;"
+
+        // Make sure to replace references to self with self. (e.g., self.up.user_present(&mut self.trussed, constants::FIDO2_UP_TIMEOUT)?;)
+
+        // Make sure to return the appropriate result at the end of the code block.
+    }
+
     #[inline(never)]
     pub(crate) fn delete_resident_key_by_path(&mut self, rk_path: &Path) -> Result<()> {
         info_now!("deleting RK {:?}", &rk_path);
@@ -1675,6 +2080,9 @@ impl<UP: UserPresence, T: TrussedRequirements> crate::Authenticator<UP, T> {
                     syscall!(self.trussed.delete(key));
                 }
                 credential::Key::WrappedKey(_) => {}
+                credential::Key::PQCKey(_) => {
+                    // TODO: Tarun
+                }
             }
         } else {
             // If for some reason there becomes a corrupt credential,

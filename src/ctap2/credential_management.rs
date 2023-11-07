@@ -411,6 +411,22 @@ where
 
         let algorithm = SigningAlgorithm::try_from(credential.algorithm)?;
         let cose_public_key = match algorithm {
+            SigningAlgorithm::Dil3 => {
+                // TODO: NEED TO FIX THIS. For now I just added P256 code as template.
+                let public_key = syscall!(self
+                    .trussed
+                    .derive_p256_public_key(private_key, Location::Volatile))
+                .key;
+                let cose_public_key = syscall!(self.trussed.serialize_key(
+                    Mechanism::P256,
+                    public_key,
+                    // KeySerialization::EcdhEsHkdf256
+                    KeySerialization::Cose,
+                ))
+                .serialized_key;
+                syscall!(self.trussed.delete(public_key));
+                PublicKey::P256Key(ctap_types::serde::cbor_deserialize(&cose_public_key).unwrap())
+            }
             SigningAlgorithm::P256 => {
                 let public_key = syscall!(self
                     .trussed

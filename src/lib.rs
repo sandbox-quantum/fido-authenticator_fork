@@ -33,9 +33,14 @@ mod dispatch;
 pub mod constants;
 pub mod credential;
 pub mod state;
+pub mod dil3key;
+pub mod kyber768key;
 
 /// Results with our [`Error`].
 pub type Result<T> = core::result::Result<T, Error>;
+
+pub use cbor_smol::{cbor_serialize, cbor_serialize_bytes, cbor_deserialize};
+pub use rand;
 
 /// Trait bound on our implementation's requirements from a Trussed client.
 ///
@@ -149,6 +154,7 @@ pub enum SigningAlgorithm {
     Ed25519 = -8,
     /// The NIST P-256 signature algorithm.
     P256 = -7,
+    Dil3 = -20,
     // #[doc(hidden)]
     // Totp = -9,
 }
@@ -159,6 +165,7 @@ impl core::convert::TryFrom<i32> for SigningAlgorithm {
         Ok(match alg {
             -7 => SigningAlgorithm::P256,
             -8 => SigningAlgorithm::Ed25519,
+            -20 => SigningAlgorithm::Dil3,
             // -9 => SigningAlgorithm::Totp,
             _ => return Err(Error::UnsupportedAlgorithm),
         })

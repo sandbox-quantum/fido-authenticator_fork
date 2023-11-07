@@ -223,6 +223,7 @@ pub struct ActiveGetAssertionData {
 )]
 pub struct RuntimeState {
     key_agreement_key: Option<KeyId>,
+    pub key_agreement_pqc_key: Option<Bytes<16>>,
     pin_token: Option<KeyId>,
     // TODO: why is this field not used?
     shared_secret: Option<KeyId>,
