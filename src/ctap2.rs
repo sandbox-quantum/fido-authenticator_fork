@@ -7,7 +7,7 @@ use ctap_types::{
     sizes, Error,
 };
 
-use littlefs2::path::Path;
+//use littlefs2::path::Path;
 
 use pqclean::{
     sb_pqclean_dilithium3_clean_crypto_sign_keypair,
@@ -1548,12 +1548,12 @@ impl<UP: UserPresence, T: TrussedRequirements> crate::Authenticator<UP, T> {
             .extend_from_slice(&data.client_data_hash)
             .map_err(|_| Error::Other)?;
 
-        let signature = if credential.algorithm == -20 {
+        let signature = if credential.algorithm() == -20 {
             let mut pqc_sig = [0; pqclean::PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_BYTES as usize];
             let mut siglen = pqclean::PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_BYTES as usize;
             let mut path = PathBuf::from("pqc_key/");
 
-            match credential.key.clone() {
+            match credential.key().clone() {
                 Key::PQCKey(key) => {
                     path.push(&PathBuf::from(key.as_slice()));
                 }
@@ -1585,7 +1585,7 @@ impl<UP: UserPresence, T: TrussedRequirements> crate::Authenticator<UP, T> {
             info_now!("Finished Dilithium3 signing");
             Bytes::from_slice(&pqc_sig).unwrap()
         } else {
-            let (mechanism, serialization) = match credential.algorithm {
+            let (mechanism, serialization) = match credential.algorithm() {
                 -7 => (Mechanism::P256, SignatureSerialization::Asn1Der),
                 -8 => (Mechanism::Ed255, SignatureSerialization::Raw),
                 // -9 => (Mechanism::Totp, SignatureSerialization::Raw),
@@ -1842,7 +1842,6 @@ impl<UP: UserPresence, T: TrussedRequirements> crate::Authenticator<UP, T> {
             }
             SigningAlgorithm::P256 => {
                 *private_key = syscall!(self.trussed.generate_p256_private_key(location)).key;
-                info_now!("generated p256 priv key");
                 public_key = syscall!(self
                     .trussed
                     .derive_p256_public_key(*private_key, Location::Volatile))
@@ -1957,7 +1956,7 @@ impl<UP: UserPresence, T: TrussedRequirements> crate::Authenticator<UP, T> {
         // store it.
         // TODO: overwrite, error handling with KeyStoreFull
 
-        let credential = Credential::new(
+        let credential = FullCredential::new(
             credential::CtapVersion::Fido21Pre,
             &parameters.rp,
             &parameters.user,
