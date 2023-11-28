@@ -25,7 +25,7 @@ use trussed::{
 
 use crate::{
     constants,
-    credential::{self, Credential, FullCredential, Key, StrippedCredential},
+    credential::{self, Credential, FullCredential, Key},
     format_hex, kyber768key, dil3key,
     state::{
         self,
@@ -39,7 +39,7 @@ use crate::{
 use crate::msp;
 
 enum CosePublicKey {
-    Standard(Bytes<1024>),
+    Standard(Bytes<2392>), // SerializedKeyBytes
     Pqc(Bytes<1964>),
 }
 
