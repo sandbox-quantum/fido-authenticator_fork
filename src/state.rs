@@ -172,7 +172,9 @@ impl Identity {
         trussed: &mut T,
     ) -> (Option<(KeyId, Certificate)>, Aaguid) {
         let key = crate::constants::ATTESTATION_KEY_ID;
-        let attestation_key_exists = syscall!(trussed.exists(Mechanism::P256, key)).exists;
+        //let attestation_key_exists = syscall!(trussed.exists(Mechanism::P256, key)).exists;
+        // The attestation key exists on the Nitrokey, and that breaks the DIL3 algorithm.
+        let attestation_key_exists = false;
         if attestation_key_exists {
             // Will panic if certificate does not exist.
             let cert =
