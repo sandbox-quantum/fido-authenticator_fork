@@ -45,9 +45,12 @@ log-warn = []
 log-error = []
 
 [dev-dependencies]
+byteorder = "1.5.0"
 # quickcheck = "1"
 rand = "0.8.4"
 #trussed = { version = "0.1", features = ["virt"] }
+serde_bytes = { version = "0.11.12", default-features = false }
+serde_cbor = { version = "0.11.0", default-features = true }
 
 # Fido2 PQC
 trussed = { git = "https://github.com/sandbox-quantum/trussed_fork", branch = "nitrokey-pqc-fido2", features = ["virt"] }
