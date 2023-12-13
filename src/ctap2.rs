@@ -710,14 +710,14 @@ impl<UP: UserPresence, T: TrussedRequirements> Authenticator for crate::Authenti
                         .try_into()
                         .unwrap();
                     let mut pqc_key_agreement_array = [0; 1088];
-                    pqc_key_agreement_array.copy_from_slice(&pqc_key_agreement.unwrap());
+                    pqc_key_agreement_array.copy_from_slice(pqc_key_agreement.unwrap());
                     let mut shared_secret_pqc = [0; 32];
                     sb_pqclean_kyber768_clean_crypto_kem_dec(
                         &mut shared_secret_pqc,
                         &pqc_key_agreement_array,
                         &kyber768_private_key,
                     );
-                    let cloned_shared_secret_pqc: [u8; 32] = shared_secret_pqc.clone();
+                    let cloned_shared_secret_pqc: [u8; 32] = shared_secret_pqc;
 
                     // 4. decrement retires
                     self.state.decrement_retries(&mut self.trussed)?;
@@ -1553,11 +1553,8 @@ impl<UP: UserPresence, T: TrussedRequirements> crate::Authenticator<UP, T> {
             let mut siglen = pqclean::PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_BYTES as usize;
             let mut path = PathBuf::from("pqc_key/");
 
-            match credential.key().clone() {
-                Key::PQCKey(key) => {
-                    path.push(&PathBuf::from(key.as_slice()));
-                }
-                _ => {}
+            if let Key::PQCKey(key) = credential.key().clone() {
+                path.push(&PathBuf::from(key.as_slice()));
             }
             let deserialized_key: Result<dil3key::Key> = dil3key::Key::deserialize(
                 syscall!(self
@@ -1730,7 +1727,7 @@ impl<UP: UserPresence, T: TrussedRequirements> crate::Authenticator<UP, T> {
 
     #[inline(never)]
     pub fn process_make_credential(
-        self: &mut Self,
+        &mut self,
         parameters: &ctap2::make_credential::Request,
         rp_id_hash: Bytes<32>,
         uv_performed: bool,
@@ -1838,7 +1835,7 @@ impl<UP: UserPresence, T: TrussedRequirements> crate::Authenticator<UP, T> {
                 };
 
                 cose_public_key =
-                    CosePublicKey::Pqc(crate::cbor_serialize_bytes(&cose_pk).unwrap().into());
+                    CosePublicKey::Pqc(crate::cbor_serialize_bytes(&cose_pk).unwrap());
             }
             SigningAlgorithm::P256 => {
                 *private_key = syscall!(self.trussed.generate_p256_private_key(location)).key;
@@ -1852,8 +1849,7 @@ impl<UP: UserPresence, T: TrussedRequirements> crate::Authenticator<UP, T> {
                         public_key,
                         KeySerialization::Cose
                     ))
-                    .serialized_key
-                    .into(),
+                    .serialized_key,
                 );
                 let _success = syscall!(self.trussed.delete(public_key)).success;
             }
@@ -1869,8 +1865,7 @@ impl<UP: UserPresence, T: TrussedRequirements> crate::Authenticator<UP, T> {
                         public_key,
                         KeySerialization::Cose
                     ))
-                    .serialized_key
-                    .into(),
+                    .serialized_key,
                 );
                 let _success = syscall!(self.trussed.delete(public_key)).success;
                 info_now!("deleted public Ed25519 key: {}", _success);

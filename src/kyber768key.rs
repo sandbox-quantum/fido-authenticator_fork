@@ -20,6 +20,6 @@ impl Key {
     }
 
     pub fn get_material(&self) -> &Bytes<2400> {
-        return &self.material;
+        &self.material
     }
 }
