@@ -1623,12 +1623,13 @@ impl<UP: UserPresence, T: TrussedRequirements> crate::Authenticator<UP, T> {
                     .read_file_pqc(Location::Internal, path.clone(),))
                 .data,
             );
-            let mut dilithium3_private_key: [u8; 4032] = deserialized_key
-                .unwrap()
-                .get_material()
-                .as_slice()
-                .try_into()
-                .unwrap();
+            let mut dilithium3_private_key: [u8; PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_SECRETKEYBYTES] =
+                deserialized_key
+                    .unwrap()
+                    .get_material()
+                    .as_slice()
+                    .try_into()
+                    .unwrap();
 
             info_now!(
                 "starting Dilithium3 signing {:?}",
@@ -1794,7 +1795,7 @@ impl<UP: UserPresence, T: TrussedRequirements> crate::Authenticator<UP, T> {
         uv_performed: bool,
         algorithm: SigningAlgorithm,
         rk_requested: &mut bool,
-        dilithium3_private_key: &mut [u8; 4032],
+        dilithium3_private_key: &mut [u8; PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_SECRETKEYBYTES],
         private_key: &mut KeyId,
         attestation_maybe: &mut Option<(KeyId, Bytes<1024>)>,
         aaguid: &mut [u8; 16],
