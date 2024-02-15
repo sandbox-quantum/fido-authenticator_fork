@@ -19,8 +19,10 @@ serde = { version = "1.0", default-features = false }
 serde_cbor = { version = "0.11.0", default-features = false }
 serde-indexed = "0.1.0"
 #trussed = {git = "https://github.com/sandbox-quantum/trussed_fork", branch = "pqc_kyber768_dilithium3"}
-pqcrypto-dilithium = { version = "0.5.0", default-features = false }
-pqcrypto-kyber = { version = "0.8.1", default-features = false }
+#pqcrypto-dilithium = { version = "0.5.0", default-features = false }
+#pqcrypto-kyber = { version = "0.8.1", default-features = false }
+pqcrypto-dilithium = { git = "https://github.com/gcsbt/pqcrypto/", rev = "2c54cc32ecfd304b18ea7355233cc814d3164aab", default-features = false }
+pqcrypto-kyber = { git = "https://github.com/gcsbt/pqcrypto/", rev = "2c54cc32ecfd304b18ea7355233cc814d3164aab", default-features = false }
 cosey = {git = "https://github.com/sandbox-quantum/cosey_fork", branch = "pqc_kyber768_dilithium3"}
 cbor-smol = "0.4"
 rand = {version = "0.8.4", features = ["small_rng"], default-features = false}
