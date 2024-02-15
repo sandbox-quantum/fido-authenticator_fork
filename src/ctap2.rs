@@ -48,6 +48,7 @@ pub mod credential_management;
 // pub mod pin;
 
 use pqcrypto_dilithium::ffi::PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_BYTES;
+use pqcrypto_dilithium::ffi::PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_PUBLICKEYBYTES;
 use pqcrypto_dilithium::ffi::PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_SECRETKEYBYTES;
 use pqcrypto_kyber::ffi::PQCLEAN_KYBER768_CLEAN_CRYPTO_CIPHERTEXTBYTES;
 use pqcrypto_kyber::ffi::PQCLEAN_KYBER768_CLEAN_CRYPTO_PUBLICKEYBYTES;
@@ -77,6 +78,15 @@ fn sb_pqclean_dilithium3_clean_crypto_sign_signature(
             m.len() as usize,
             sk.as_ptr(),
         );
+    }
+}
+
+pub fn sb_pqclean_dilithium3_clean_crypto_sign_keypair(
+    pk: &mut [u8; PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_PUBLICKEYBYTES as usize],
+    sk: &mut [u8; PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_SECRETKEYBYTES as usize],
+) {
+    unsafe {
+        PQCLEAN_DILITHIUM3_CLEAN_crypto_sign_keypair(pk as *mut _, sk as *mut _);
     }
 }
 
@@ -750,13 +760,15 @@ impl<UP: UserPresence, T: TrussedRequirements> Authenticator for crate::Authenti
                     let deserialized_key: Result<kyber768key::Key> =
                         kyber768key::Key::deserialize(kyber_key);
 
-                    let kyber768_private_key: [u8; 2400] = deserialized_key
-                        .unwrap()
-                        .get_material()
-                        .as_slice()
-                        .try_into()
-                        .unwrap();
-                    let mut pqc_key_agreement_array = [0; 1088];
+                    let kyber768_private_key: [u8; PQCLEAN_KYBER768_CLEAN_CRYPTO_SECRETKEYBYTES] =
+                        deserialized_key
+                            .unwrap()
+                            .get_material()
+                            .as_slice()
+                            .try_into()
+                            .unwrap();
+                    let mut pqc_key_agreement_array =
+                        [0; PQCLEAN_KYBER768_CLEAN_CRYPTO_CIPHERTEXTBYTES];
                     pqc_key_agreement_array.copy_from_slice(pqc_key_agreement.unwrap());
                     let mut shared_secret_pqc = [0; 32];
                     sb_pqclean_kyber768_clean_crypto_kem_dec(
@@ -1868,12 +1880,10 @@ impl<UP: UserPresence, T: TrussedRequirements> crate::Authenticator<UP, T> {
                 let mut dilithium3_public_key = [0u8;
                     pqcrypto_dilithium::ffi::PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_PUBLICKEYBYTES
                         as usize];
-                unsafe {
-                    PQCLEAN_DILITHIUM3_CLEAN_crypto_sign_keypair(
-                        &mut dilithium3_public_key as *mut u8,
-                        dilithium3_private_key as *mut u8,
-                    );
-                };
+                sb_pqclean_dilithium3_clean_crypto_sign_keypair(
+                    &mut dilithium3_public_key,
+                    dilithium3_private_key,
+                );
 
                 private_key_pqc_id = self.store_key(
                     location,
