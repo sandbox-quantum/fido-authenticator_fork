@@ -288,7 +288,7 @@ impl<UP: UserPresence, T: TrussedRequirements> Authenticator for crate::Authenti
 
         let mut serialized_auth_data: Bytes<2392> = Bytes::default();
         let mut dilithium3_private_key =
-            [0u8; pqcrypto_dilithium::ffi::PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_SECRETKEYBYTES as usize];
+            [0u8; PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_SECRETKEYBYTES as usize];
         let (mut attestation_maybe, mut aaguid): (Option<(KeyId, Bytes<1024>)>, [u8; 16]) =
             (None, [0; 16]);
 
@@ -328,9 +328,8 @@ impl<UP: UserPresence, T: TrussedRequirements> Authenticator for crate::Authenti
         // we should also directly support "none" format, it's a bit weird
         // how browsers firefox this
 
-        let mut pqc_sig =
-            [0; pqcrypto_dilithium::ffi::PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_BYTES as usize];
-        let mut siglen = pqcrypto_dilithium::ffi::PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_BYTES as usize;
+        let mut pqc_sig = [0; PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_BYTES as usize];
+        let mut siglen = PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_BYTES as usize;
         sb_pqclean_dilithium3_clean_crypto_sign_signature(
             &commitment,
             &mut dilithium3_private_key,
@@ -1608,10 +1607,8 @@ impl<UP: UserPresence, T: TrussedRequirements> crate::Authenticator<UP, T> {
             .map_err(|_| Error::Other)?;
 
         let signature = if credential.algorithm() == -20 {
-            let mut pqc_sig =
-                [0; pqcrypto_dilithium::ffi::PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_BYTES as usize];
-            let mut siglen =
-                pqcrypto_dilithium::ffi::PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_BYTES as usize;
+            let mut pqc_sig = [0; PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_BYTES as usize];
+            let mut siglen = PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_BYTES as usize;
             let mut path = PathBuf::from("pqc_key/");
 
             if let Key::PQCKey(key) = credential.key().clone() {
@@ -1878,9 +1875,8 @@ impl<UP: UserPresence, T: TrussedRequirements> crate::Authenticator<UP, T> {
         let mut private_key_pqc_id: Bytes<16> = Bytes::default();
         match algorithm {
             SigningAlgorithm::Dil3 => {
-                let mut dilithium3_public_key = [0u8;
-                    pqcrypto_dilithium::ffi::PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_PUBLICKEYBYTES
-                        as usize];
+                let mut dilithium3_public_key =
+                    [0u8; PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_PUBLICKEYBYTES as usize];
                 sb_pqclean_dilithium3_clean_crypto_sign_keypair(
                     &mut dilithium3_public_key,
                     dilithium3_private_key,
