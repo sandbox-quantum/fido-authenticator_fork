@@ -21,8 +21,8 @@ serde-indexed = "0.1.0"
 #trussed = {git = "https://github.com/sandbox-quantum/trussed_fork", branch = "pqc_kyber768_dilithium3"}
 #pqcrypto-dilithium = { version = "0.5.0", default-features = false }
 #pqcrypto-kyber = { version = "0.8.1", default-features = false }
-pqcrypto-dilithium = { git = "https://github.com/gcsbt/pqcrypto/", rev = "2c54cc32ecfd304b18ea7355233cc814d3164aab", default-features = false }
-pqcrypto-kyber = { git = "https://github.com/gcsbt/pqcrypto/", rev = "2c54cc32ecfd304b18ea7355233cc814d3164aab", default-features = false }
+pqcrypto-dilithium = { git = "https://github.com/gcsbt/pqcrypto/", rev = "1e89b8e34fdc36da526fa0a46549b89da9a80992", default-features = false }
+pqcrypto-kyber = { git = "https://github.com/gcsbt/pqcrypto/", rev = "1e89b8e34fdc36da526fa0a46549b89da9a80992", default-features = false }
 cosey = {git = "https://github.com/sandbox-quantum/cosey_fork", branch = "pqc_kyber768_dilithium3"}
 cbor-smol = "0.4"
 rand = {version = "0.8.4", features = ["small_rng"], default-features = false}
@@ -74,5 +74,5 @@ serde-indexed = { git = "https://github.com/sosthene-nitrokey/serde-indexed.git"
 ctap-types = { git = "https://github.com/sandbox-quantum/ctap-types_fork", branch = "nitrokey-pqc-fido2" }
 trussed = { git = "https://github.com/sandbox-quantum/trussed_fork", branch = "nitrokey-pqc-fido2" }
 
-pqcrypto-dilithium = { git = "https://github.com/gcsbt/pqcrypto/", rev = "2c54cc32ecfd304b18ea7355233cc814d3164aab" }
-pqcrypto-kyber = { git = "https://github.com/gcsbt/pqcrypto/", rev = "2c54cc32ecfd304b18ea7355233cc814d3164aab" }
+pqcrypto-dilithium = { git = "https://github.com/gcsbt/pqcrypto/", rev = "1e89b8e34fdc36da526fa0a46549b89da9a80992" }
+pqcrypto-kyber = { git = "https://github.com/gcsbt/pqcrypto/", rev = "1e89b8e34fdc36da526fa0a46549b89da9a80992" }
