@@ -9,10 +9,11 @@ use ctap_types::{
 
 //use littlefs2::path::Path;
 
-use pqclean::{
-    sb_pqclean_dilithium3_clean_crypto_sign_keypair,
-    sb_pqclean_dilithium3_clean_crypto_sign_signature, sb_pqclean_kyber768_clean_crypto_kem_dec,
-    sb_pqclean_kyber768_clean_crypto_sign_keypair,
+use pqcrypto_dilithium::ffi::{
+    PQCLEAN_DILITHIUM3_CLEAN_crypto_sign_keypair, PQCLEAN_DILITHIUM3_CLEAN_crypto_sign_signature,
+};
+use pqcrypto_kyber::ffi::{
+    PQCLEAN_KYBER768_CLEAN_crypto_kem_dec, PQCLEAN_KYBER768_CLEAN_crypto_kem_keypair,
 };
 
 use trussed::{
@@ -26,7 +27,7 @@ use trussed::{
 use crate::{
     constants,
     credential::{self, Credential, FullCredential, Key},
-    format_hex, kyber768key, dil3key,
+    dil3key, format_hex, kyber768key,
     state::{
         self,
         // // (2022-02-27): 9288 bytes
@@ -45,6 +46,51 @@ enum CosePublicKey {
 
 pub mod credential_management;
 // pub mod pin;
+
+use pqcrypto_dilithium::ffi::PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_BYTES;
+use pqcrypto_dilithium::ffi::PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_SECRETKEYBYTES;
+use pqcrypto_kyber::ffi::PQCLEAN_KYBER768_CLEAN_CRYPTO_CIPHERTEXTBYTES;
+use pqcrypto_kyber::ffi::PQCLEAN_KYBER768_CLEAN_CRYPTO_PUBLICKEYBYTES;
+use pqcrypto_kyber::ffi::PQCLEAN_KYBER768_CLEAN_CRYPTO_SECRETKEYBYTES;
+
+fn sb_pqclean_kyber768_clean_crypto_kem_dec(
+    ss: &mut [u8; 32 as usize],
+    ct: &[u8; PQCLEAN_KYBER768_CLEAN_CRYPTO_CIPHERTEXTBYTES as usize],
+    sk: &[u8; PQCLEAN_KYBER768_CLEAN_CRYPTO_SECRETKEYBYTES as usize],
+) {
+    unsafe {
+        PQCLEAN_KYBER768_CLEAN_crypto_kem_dec(ss as *mut _, ct.as_ptr(), sk.as_ptr());
+    }
+}
+
+fn sb_pqclean_dilithium3_clean_crypto_sign_signature(
+    m: &[u8],
+    sk: &[u8; PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_SECRETKEYBYTES as usize],
+    sig: &mut [u8; PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_BYTES as usize],
+    siglen: &mut usize,
+) {
+    unsafe {
+        PQCLEAN_DILITHIUM3_CLEAN_crypto_sign_signature(
+            sig as *mut _,
+            siglen as *mut _,
+            m.as_ptr(),
+            m.len() as usize,
+            sk.as_ptr(),
+        );
+    }
+}
+
+fn sb_pqclean_kyber768_clean_crypto_sign_keypair() -> (
+    [u8; PQCLEAN_KYBER768_CLEAN_CRYPTO_PUBLICKEYBYTES as usize],
+    [u8; PQCLEAN_KYBER768_CLEAN_CRYPTO_SECRETKEYBYTES as usize],
+) {
+    let mut pk = [0; PQCLEAN_KYBER768_CLEAN_CRYPTO_PUBLICKEYBYTES as usize];
+    let mut sk = [0; PQCLEAN_KYBER768_CLEAN_CRYPTO_SECRETKEYBYTES as usize];
+    unsafe {
+        PQCLEAN_KYBER768_CLEAN_crypto_kem_keypair(&mut pk as *mut _, &mut sk as *mut _);
+    }
+    (pk, sk)
+}
 
 /// Implement `ctap2::Authenticator` for our Authenticator.
 impl<UP: UserPresence, T: TrussedRequirements> Authenticator for crate::Authenticator<UP, T> {
@@ -232,7 +278,7 @@ impl<UP: UserPresence, T: TrussedRequirements> Authenticator for crate::Authenti
 
         let mut serialized_auth_data: Bytes<2392> = Bytes::default();
         let mut dilithium3_private_key =
-            [0u8; pqclean::PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_SECRETKEYBYTES as usize];
+            [0u8; pqcrypto_dilithium::ffi::PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_SECRETKEYBYTES as usize];
         let (mut attestation_maybe, mut aaguid): (Option<(KeyId, Bytes<1024>)>, [u8; 16]) =
             (None, [0; 16]);
 
@@ -272,8 +318,9 @@ impl<UP: UserPresence, T: TrussedRequirements> Authenticator for crate::Authenti
         // we should also directly support "none" format, it's a bit weird
         // how browsers firefox this
 
-        let mut pqc_sig = [0; pqclean::PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_BYTES as usize];
-        let mut siglen = pqclean::PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_BYTES as usize;
+        let mut pqc_sig =
+            [0; pqcrypto_dilithium::ffi::PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_BYTES as usize];
+        let mut siglen = pqcrypto_dilithium::ffi::PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_BYTES as usize;
         sb_pqclean_dilithium3_clean_crypto_sign_signature(
             &commitment,
             &mut dilithium3_private_key,
@@ -1549,8 +1596,10 @@ impl<UP: UserPresence, T: TrussedRequirements> crate::Authenticator<UP, T> {
             .map_err(|_| Error::Other)?;
 
         let signature = if credential.algorithm() == -20 {
-            let mut pqc_sig = [0; pqclean::PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_BYTES as usize];
-            let mut siglen = pqclean::PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_BYTES as usize;
+            let mut pqc_sig =
+                [0; pqcrypto_dilithium::ffi::PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_BYTES as usize];
+            let mut siglen =
+                pqcrypto_dilithium::ffi::PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_BYTES as usize;
             let mut path = PathBuf::from("pqc_key/");
 
             if let Key::PQCKey(key) = credential.key().clone() {
@@ -1562,7 +1611,7 @@ impl<UP: UserPresence, T: TrussedRequirements> crate::Authenticator<UP, T> {
                     .read_file_pqc(Location::Internal, path.clone(),))
                 .data,
             );
-            let mut dilithium3_private_key: [u8; 4000] = deserialized_key
+            let mut dilithium3_private_key: [u8; 4032] = deserialized_key
                 .unwrap()
                 .get_material()
                 .as_slice()
@@ -1733,7 +1782,7 @@ impl<UP: UserPresence, T: TrussedRequirements> crate::Authenticator<UP, T> {
         uv_performed: bool,
         algorithm: SigningAlgorithm,
         rk_requested: &mut bool,
-        dilithium3_private_key: &mut [u8; 4000],
+        dilithium3_private_key: &mut [u8; 4032],
         private_key: &mut KeyId,
         attestation_maybe: &mut Option<(KeyId, Bytes<1024>)>,
         aaguid: &mut [u8; 16],
@@ -1816,12 +1865,15 @@ impl<UP: UserPresence, T: TrussedRequirements> crate::Authenticator<UP, T> {
         let mut private_key_pqc_id: Bytes<16> = Bytes::default();
         match algorithm {
             SigningAlgorithm::Dil3 => {
-                let mut dilithium3_public_key =
-                    [0u8; pqclean::PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_PUBLICKEYBYTES as usize];
-                sb_pqclean_dilithium3_clean_crypto_sign_keypair(
-                    &mut dilithium3_public_key,
-                    dilithium3_private_key,
-                );
+                let mut dilithium3_public_key = [0u8;
+                    pqcrypto_dilithium::ffi::PQCLEAN_DILITHIUM3_CLEAN_CRYPTO_PUBLICKEYBYTES
+                        as usize];
+                unsafe {
+                    PQCLEAN_DILITHIUM3_CLEAN_crypto_sign_keypair(
+                        &mut dilithium3_public_key as *mut u8,
+                        dilithium3_private_key as *mut u8,
+                    );
+                };
 
                 private_key_pqc_id = self.store_key(
                     location,

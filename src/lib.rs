@@ -15,6 +15,11 @@
 extern crate delog;
 generate_macros!();
 
+use failure_getrandom::always_fail;
+use getrandom::register_custom_getrandom;
+
+register_custom_getrandom!(always_fail);
+
 use core::time::Duration;
 
 use trussed::{client, syscall, types::Message, Client as TrussedClient};
