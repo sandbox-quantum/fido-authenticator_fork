@@ -266,6 +266,36 @@ impl<UP: UserPresence, T: TrussedRequirements> Authenticator for crate::Authenti
         let public_key: KeyId;
         let cose_public_key;
         match algorithm {
+            SigningAlgorithm::Dilithium2 => {
+                let keypair: GenerateKeyPair = syscall!(self
+                    .trussed
+                    .generate_dilithium2_keypair(location, Location::Volatile));
+                (private_key, public_key) = (keypair.private_key, keypair.public_key);
+                cose_public_key = syscall!(self.trussed.serialize_key(
+                    Mechanism::Dilithium2,
+                    public_key,
+                    KeySerialization::Cose
+                ))
+                .serialized_key;
+                let _success = syscall!(self.trussed.delete(public_key)).success;
+                info_now!("deleted public Dilithium2 key: {}", _success);
+            }
+
+            SigningAlgorithm::Dilithium3 => {
+                let keypair: GenerateKeyPair = syscall!(self
+                    .trussed
+                    .generate_dilithium3_keypair(location, Location::Volatile));
+                (private_key, public_key) = (keypair.private_key, keypair.public_key);
+                cose_public_key = syscall!(self.trussed.serialize_key(
+                    Mechanism::Dilithium3,
+                    public_key,
+                    KeySerialization::Cose
+                ))
+                .serialized_key;
+                let _success = syscall!(self.trussed.delete(public_key)).success;
+                info_now!("deleted public Dilithium2 key: {}", _success);
+            }
+
             SigningAlgorithm::P256 => {
                 private_key = syscall!(self.trussed.generate_p256_private_key(location)).key;
                 public_key = syscall!(self
@@ -481,21 +511,33 @@ impl<UP: UserPresence, T: TrussedRequirements> Authenticator for crate::Authenti
                         .signature;
                         (der_signature.to_bytes().map_err(|_| Error::Other)?, -7)
                     } // SigningAlgorithm::Totp => {
-                      //     // maybe we can fake it here too, but seems kinda weird
-                      //     // return Err(Error::UnsupportedAlgorithm);
-                      //     // micro-ecc is borked. let's self-sign anyway
-                      //     let hash = syscall!(self.trussed.hash_sha256(&commitment.as_ref())).hash;
-                      //     let tmp_key = syscall!(self.trussed
-                      //         .generate_p256_private_key(Location::Volatile))
-                      //         .key;
+                    //     // maybe we can fake it here too, but seems kinda weird
+                    //     // return Err(Error::UnsupportedAlgorithm);
+                    //     // micro-ecc is borked. let's self-sign anyway
+                    //     let hash = syscall!(self.trussed.hash_sha256(&commitment.as_ref())).hash;
+                    //     let tmp_key = syscall!(self.trussed
+                    //         .generate_p256_private_key(Location::Volatile))
+                    //         .key;
 
-                      //     let signature = syscall!(self.trussed.sign_p256(
-                      //         tmp_key,
-                      //         &hash,
-                      //         SignatureSerialization::Asn1Der,
-                      //     )).signature;
-                      //     (signature.to_bytes().map_err(|_| Error::Other)?, -7)
-                      // }
+                    //     let signature = syscall!(self.trussed.sign_p256(
+                    //         tmp_key,
+                    //         &hash,
+                    //         SignatureSerialization::Asn1Der,
+                    //     )).signature;
+                    //     (signature.to_bytes().map_err(|_| Error::Other)?, -7)
+                    // }
+                    SigningAlgorithm::Dilithium2 => {
+                        let signature =
+                            syscall!(self.trussed.sign_dilithium2(private_key, &commitment))
+                                .signature;
+                        (signature.to_bytes().map_err(|_| Error::Other)?, -100)
+                    }
+                    SigningAlgorithm::Dilithium3 => {
+                        let signature =
+                            syscall!(self.trussed.sign_dilithium3(private_key, &commitment))
+                                .signature;
+                        (signature.to_bytes().map_err(|_| Error::Other)?, -101)
+                    }
                 }
             } else {
                 let signature = syscall!(self.trussed.sign_p256(

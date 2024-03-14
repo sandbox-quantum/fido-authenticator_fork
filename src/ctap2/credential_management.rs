@@ -439,6 +439,12 @@ where
             } // SigningAlgorithm::Totp => {
               //     PublicKey::TotpKey(Default::default())
               // }
+            SigningAlgorithm::Dilithium2 => {
+                // TODO: need to construct a way to retrieve the public key from private key
+            },
+            SigningAlgorithm::Dilithium3 => {
+                // TODO: need to construct a way to retrieve the public key from private key
+            },
         };
         let cred_protect = match credential.cred_protect {
             Some(x) => Some(x),

@@ -41,6 +41,7 @@ pub type Result<T> = core::result::Result<T, Error>;
 ///
 /// - Client is core Trussed client functionality.
 /// - Ed25519 and P-256 are the core signature algorithms.
+/// - Dilithium2 and Dilithium3 are the core PQC signature algorithms.
 /// - AES-256, SHA-256 and its HMAC are used within the CTAP protocols.
 /// - ChaCha8Poly1305 is our AEAD of choice, used e.g. for the key handles.
 pub trait TrussedRequirements:
@@ -50,6 +51,8 @@ pub trait TrussedRequirements:
     + client::Aes256Cbc
     + client::Sha256
     + client::HmacSha256
+    + client::Dilithium2
+    + client::Dilithium3
     + client::Ed255 // + client::Totp
 {
 }
@@ -61,6 +64,8 @@ impl<T> TrussedRequirements for T where
         + client::Aes256Cbc
         + client::Sha256
         + client::HmacSha256
+        + client::Dilithium2
+        + client::Dilithium3
         + client::Ed255 // + client::Totp
 {
 }
@@ -149,6 +154,9 @@ pub enum SigningAlgorithm {
     P256 = -7,
     // #[doc(hidden)]
     // Totp = -9,
+    /// PQC signature algorithm.
+    Dilithium2 = -100,
+    Dilithium3 = -101,
 }
 
 impl core::convert::TryFrom<i32> for SigningAlgorithm {
@@ -157,6 +165,8 @@ impl core::convert::TryFrom<i32> for SigningAlgorithm {
         Ok(match alg {
             -7 => SigningAlgorithm::P256,
             -8 => SigningAlgorithm::Ed25519,
+            -100 => SigningAlgorithm::Dilithium2,
+            -101 => SigningAlgorithm::Dilithium3,
             // -9 => SigningAlgorithm::Totp,
             _ => return Err(Error::UnsupportedAlgorithm),
         })
