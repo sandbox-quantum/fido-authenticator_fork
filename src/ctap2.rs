@@ -17,9 +17,12 @@ use trussed::{
     syscall, try_syscall,
     types::{
         KeyId, KeySerialization, Location, Mechanism, MediumData, Message, Path, PathBuf,
-        SignatureSerialization, StorageAttributes,
+        SignatureSerialization,
     },
 };
+
+#[cfg(feature = "backend-dilithium")]
+use trussed::types::StorageAttributes;
 
 use crate::{
     constants::{self, MAX_RESIDENT_CREDENTIALS_GUESSTIMATE},

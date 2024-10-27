@@ -4,8 +4,11 @@ use core::convert::TryFrom;
 
 use trussed::{
     syscall, try_syscall,
-    types::{DirEntry, Location, Path, PathBuf, StorageAttributes},
+    types::{DirEntry, Location, Path, PathBuf},
 };
+
+#[cfg(feature = "backend-dilithium")]
+use trussed::types::StorageAttributes;
 
 use cosey::PublicKey;
 use ctap_types::{
