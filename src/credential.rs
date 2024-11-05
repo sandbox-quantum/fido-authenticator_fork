@@ -4,6 +4,7 @@ use core::cmp::Ordering;
 
 use serde::Serialize;
 use serde_bytes::ByteArray;
+use trussed::config::MAX_FIDO_WRAPPED_KEY_LENGTH;
 use trussed::{client, syscall, try_syscall, types::KeyId};
 
 pub(crate) use ctap_types::{
@@ -95,7 +96,7 @@ impl TryFrom<CredentialId> for EncryptedSerializedCredential {
 pub enum Key {
     ResidentKey(KeyId),
     // THIS USED TO BE 92 NOW IT'S 96 or 97 or so... waddup?
-    WrappedKey(Bytes<128>),
+    WrappedKey(Bytes<MAX_FIDO_WRAPPED_KEY_LENGTH>),
 }
 
 /// A credential that is managed by the authenticator.
