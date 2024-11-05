@@ -9,7 +9,9 @@ use ctap_types::{
     },
     heapless::{String, Vec},
     heapless_bytes::Bytes,
-    sizes, ByteArray, Error,
+    sizes,
+    sizes::MAX_COMMITTMENT_LENGTH,
+    ByteArray, Error,
 };
 use littlefs2_core::path;
 use sha2::{Digest as _, Sha256};
@@ -517,7 +519,11 @@ impl<UP: UserPresence, T: TrussedRequirements> Authenticator for crate::Authenti
             sign_count: self.state.persistent.timestamp(&mut self.trussed)?,
 
             attested_credential_data: {
-                // debug_now!("acd in, cid len {}, pk len {}", credential_id.0.len(), cose_public_key.len());
+                debug_now!(
+                    "acd in, cid len {}, pk len {}",
+                    credential_id.0.len(),
+                    cose_public_key.len()
+                );
                 let attested_credential_data = ctap2::make_credential::AttestedCredentialData {
                     aaguid: &aaguid,
                     credential_id: &credential_id.0,
@@ -554,7 +560,7 @@ impl<UP: UserPresence, T: TrussedRequirements> Authenticator for crate::Authenti
                     Some(AttestationStatement::None(NoneAttestationStatement {}))
                 }
                 SupportedAttestationFormat::Packed => {
-                    let mut commitment = Bytes::<1024>::new();
+                    let mut commitment = Bytes::<MAX_COMMITTMENT_LENGTH>::new();
                     commitment
                         .extend_from_slice(&serialized_auth_data)
                         .map_err(|_| Error::Other)?;
